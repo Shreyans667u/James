@@ -1,0 +1,128 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>James</title><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#10231c"><link rel="icon" href="icons/icon.svg">
+<style>
+:root{--bg:#10231c;--ink:#efe9da;--dim:#9fae9f;--brass:#c8a24a;--line:#27433a;--card:#183228;box-sizing:border-box}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:17px/1.45 "Iowan Old Style",Palatino,Georgia,serif;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;justify-content:space-between;align-items:baseline;padding:14px 20px 6px}
+h1{font-size:30px;margin:0;letter-spacing:.02em;font-weight:600}
+#st{color:var(--dim);font-size:14px;font-style:italic}
+#log{flex:1;overflow-y:auto;padding:8px 20px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:88%;padding:9px 13px;border-radius:14px 14px 14px 3px;background:var(--card);border:1px solid var(--line)}
+.m.u{align-self:flex-end;border-radius:14px 14px 3px 14px;background:transparent;color:var(--dim)}
+.m.s{align-self:center;background:none;border:none;color:var(--dim);font-size:14px;font-style:italic}
+#live{min-height:24px;text-align:center;color:var(--dim);font-style:italic;padding:0 20px}
+#dock{display:flex;flex-direction:column;align-items:center;gap:10px;padding:10px 20px 18px}
+#mic{width:96px;height:96px;border-radius:50%;border:2px solid var(--brass);background:radial-gradient(circle at 35% 30%,#d9b95f,#9c7a2b);color:#10231c;font:600 15px Georgia,serif;cursor:pointer;box-shadow:0 0 0 0 rgba(200,162,74,.5)}
+#mic.on{animation:p 1.4s infinite}@keyframes p{70%{box-shadow:0 0 0 22px rgba(200,162,74,0)}100%{box-shadow:0 0 0 0 rgba(200,162,74,0)}}
+@media(prefers-reduced-motion:reduce){#mic.on{animation:none;box-shadow:0 0 0 8px rgba(200,162,74,.4)}}
+.row{display:flex;gap:10px;width:100%;max-width:460px}
+input,textarea,select,button.b{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:inherit;width:100%}
+button.b{width:auto;cursor:pointer}button.pri{background:var(--brass);color:#10231c;border-color:var(--brass);font-weight:600}
+:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+#pend{display:none;margin:0 20px;padding:12px;border:1px solid var(--brass);border-radius:12px;background:var(--card)}
+#pend p{margin:0 0 8px}
+details{margin:0 20px 8px;color:var(--dim)}summary{cursor:pointer;padding:4px 0}
+details label{display:block;margin:10px 0 4px;font-size:14px}
+textarea{min-height:70px;font:14px/1.4 monospace}
+</style></head><body>
+<header><h1>James</h1><span id="st">at your service</span></header>
+<div id="log" aria-live="polite"></div>
+<div id="pend"><p id="pt"></p><input id="pin" inputmode="numeric" type="password" placeholder="Voice PIN" hidden>
+<div class="row" style="margin-top:8px"><button class="b pri" id="ok">Confirm</button><button class="b" id="no">Cancel</button></div></div>
+<details id="set"><summary>Settings</summary>
+<label>Anthropic API key (stays on this phone)</label><input id="key" type="password" placeholder="sk-ant-...">
+<label>Voice PIN for sensitive actions (digits, optional)</label><input id="pinset" type="password" inputmode="numeric">
+<label>Speech language</label><input id="lang" placeholder="en-GB">
+<label>Speech speed</label><input id="rate" type="range" min=".7" max="1.4" step=".05">
+<label><input type="checkbox" id="wake" style="width:auto"> Wake-word mode (say "James"; keep the screen on)</label>
+<label>Contacts (one per line: Name=+number or email)</label><textarea id="contacts"></textarea>
+<label>Devices (one per line: name=https://url)</label><textarea id="devices"></textarea>
+<div class="row" style="margin-top:10px"><button class="b pri" id="save">Save</button><button class="b" id="clr">Clear notes and lists</button></div></details>
+<div id="live"></div>
+<div id="dock"><button id="mic" aria-label="Talk to James">Tap to talk</button>
+<div class="row"><input id="txt" placeholder="Or type to James"><button class="b" id="send">Send</button></div></div>
+<script>
+const $=id=>document.getElementById(id),L=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},W=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
+let S=Object.assign({key:"",pinHash:"",lang:"en-GB",rate:1,wake:false,contacts:"",devices:""},L("j_set",{}));
+let D=Object.assign({notes:[],todos:[],shop:[]},L("j_data",{}));
+let hist=[],pending=null,speaking=false,busy=false,listening=false,rec=null,timers=[],wl=null;
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function fill(){$("key").value=S.key;$("lang").value=S.lang;$("rate").value=S.rate;$("wake").checked=S.wake;$("contacts").value=S.contacts;$("devices").value=S.devices}
+fill();if(!S.key)$("set").open=true;
+const add=(t,c="")=>{const d=document.createElement("div");d.className="m "+c;d.textContent=t;$("log").append(d);$("log").scrollTop=1e9};
+const st=t=>$("st").textContent=t;
+async function sha(s){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("james:"+s));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("")}
+$("save").onclick=async()=>{S.key=$("key").value.trim();S.lang=$("lang").value.trim()||"en-GB";S.rate=+$("rate").value;S.wake=$("wake").checked;S.contacts=$("contacts").value;S.devices=$("devices").value;const p=$("pinset").value.replace(/\D/g,"");if(p)S.pinHash=await sha(p);$("pinset").value="";W("j_set",S);$("set").open=false;add("Settings saved.","s")};
+$("clr").onclick=()=>{D={notes:[],todos:[],shop:[]};W("j_data",D);add("Notes and lists cleared.","s")};
+function voice(){const v=speechSynthesis.getVoices(),l=S.lang.toLowerCase();return v.find(x=>x.lang.toLowerCase()==l&&/male|daniel|george|google uk english male/i.test(x.name))||v.find(x=>x.lang.toLowerCase()==l)||v.find(x=>x.lang.toLowerCase().startsWith(l.slice(0,2)))}
+function say(t,lang){add(t);return new Promise(r=>{if(!("speechSynthesis" in window))return r();speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t.replace(/[*_#`]/g,""));u.lang=lang||S.lang;u.rate=S.rate;const v=voice();if(v&&(!lang||lang==S.lang))u.voice=v;speaking=true;stopRec();u.onend=u.onerror=()=>{speaking=false;r()};speechSynthesis.speak(u)})}
+function startRec(){if(!SR){add("Speech recognition is not supported here. Use Chrome on Android, or type.","s");return}
+rec=new SR();rec.lang=S.lang;rec.interimResults=true;rec.continuous=S.wake;
+rec.onresult=e=>{let t="",f=false;for(let i=e.resultIndex;i<e.results.length;i++){t+=e.results[i][0].transcript;if(e.results[i].isFinal)f=true}$("live").textContent=t;if(f){$("live").textContent="";got(t.trim())}};
+rec.onerror=e=>{if(e.error==="not-allowed"){add("Microphone permission is blocked. Allow it in Chrome site settings.","s");listening=false}};
+rec.onend=()=>{if(listening&&!busy&&!speaking){try{rec.start()}catch{}}else if(!S.wake&&!busy&&!speaking)ui(false)};
+listening=true;try{rec.start()}catch{};ui(true)}
+function stopRec(){try{rec&&rec.stop()}catch{}}
+function ui(on){$("mic").classList.toggle("on",on);$("mic").textContent=on?(S.wake?"Listening":"Listening…"):"Tap to talk";st(on?(S.wake?"say “James”":"listening"):"at your service")}
+$("mic").onclick=async()=>{if(listening){listening=false;stopRec();ui(false);wl&&wl.release().catch(()=>{});return}speechSynthesis.cancel();if(S.wake&&navigator.wakeLock)try{wl=await navigator.wakeLock.request("screen")}catch{}startRec()};
+$("send").onclick=()=>{const t=$("txt").value.trim();if(t){$("txt").value="";got(t,true)}};$("txt").onkeydown=e=>{if(e.key==="Enter")$("send").click()};
+async function got(t,typed){if(!t||busy)return;
+if(pending){return resolve(t)}
+if(S.wake&&!typed&&!/\bjames\b/i.test(t))return;
+t=t.replace(/^\s*(hey |ok |okay )?james[,.! ]*/i,"")||"Yes?";
+busy=true;add(t,"u");st("thinking");
+try{const r=await ask(t);await handle(r)}catch(e){await say(String(e.message||e).includes("401")?"That API key was refused. Check it in settings.":"I could not reach my brain. "+String(e.message||e).slice(0,80))}
+busy=false;ui(listening);if(listening&&!speaking)startRec()}
+function sys(){return `You are James, the personal voice assistant of mr.orin, running inside a web app on his Android phone. Calm, sharp, loyal, quick: a capable British butler with a maker's brain. Everything you write is read aloud by text-to-speech.
+VOICE RULES: Lead with the answer or the action. No preamble. Default to one or two short sentences. No markdown, emojis, symbols or bullets. Say numbers, dates and times as a person would. Ask at most one clarifying question, only if you truly cannot proceed. Reply in the language mr.orin speaks and switch when he does. Lightly witty when it fits; disagree honestly and briefly if he is about to err, then do what he decides. Medical, legal and financial answers are general information only. Emergencies first: if he sounds in danger, offer to call emergency services. Never invent contacts, numbers or results. Use web search for anything current; say "as far as I know" when unsure. Refuse anything illegal or harmful, briefly.
+OUTPUT FORMAT: reply with ONLY one JSON object, no code fences: {"speak":"<what to say aloud>","lang":"<BCP-47 code of your reply, e.g. en-GB>","action":null or {"name":"<action>","params":{...}}}. "speak" is said after the action completes, so word it as a confirmation ("Done. Alarm set for six thirty.").
+ACTIONS THE APP CAN RUN (use exactly these; anything else you must say you cannot do from a web app and suggest an alternative):
+call{to:"number"} sms{to,body} email{to,subject,body} navigate{to:"place"} open_url{url} web_search{q} youtube{q} timer{seconds,label} (only fires while this app is open) alarm{hour,minute,label} (opens the phone clock app) note_add{text} todo_add{text} shop_add{text} list_show{list:"notes|todos|shop"} http{device:"<name from devices list>" or url, method, path, body} share{text} copy{text}.
+call, sms, email, http and share are sensitive: the app asks mr.orin to confirm (and for his voice PIN if set), so just request them.
+Only use numbers or addresses from the contacts list or that he states. Ambiguous between two contacts: ask once, naming both.
+Now: ${new Date().toString()}.
+CONTACTS:\n${S.contacts||"(none)"}\nDEVICES:\n${S.devices||"(none)"}\nSAVED NOTES: ${D.notes.slice(-5).join(" | ")||"(none)"}\nTODOS: ${D.todos.join(" | ")||"(none)"}`}
+async function ask(t){hist.push({role:"user",content:t});hist=hist.slice(-14);if(hist[0].role!=="user")hist.shift();
+const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"content-type":"application/json","x-api-key":S.key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-5-5",max_tokens:700,system:sys(),messages:hist,tools:[{type:"web_search_20250305",name:"web_search",max_uses:3}]})});
+if(!r.ok)throw new Error(r.status+" "+(await r.text()).slice(0,120));
+const j=await r.json(),txt=j.content.filter(b=>b.type==="text").map(b=>b.text).join("").trim();hist.push({role:"assistant",content:txt||"{}"});
+const m=txt.replace(/```json|```/g,"").match(/\{[\s\S]*\}/);try{return JSON.parse(m[0])}catch{return{speak:txt,action:null}}}
+const SENS=["call","sms","email","http","share"];
+async function handle(r){const a=r.action;if(!a||!a.name)return say(r.speak||"Very good.",r.lang);
+if(SENS.includes(a.name)){pending={a,r};$("pt").textContent="Confirm: "+desc(a);$("pin").hidden=!S.pinHash;$("pin").value="";$("pend").style.display="block";return say("Shall I proceed? "+(S.pinHash?"Please say your PIN, or type it, and confirm.":"Say confirm or cancel."))}
+return run(a,r)}
+const desc=a=>a.name+" → "+Object.values(a.params||{}).join(" · ").slice(0,140);
+async function resolve(t,tap){const l=t.toLowerCase();busy=true;
+if(/\b(cancel|no|stop|abort)\b/.test(l)&&!tap){return cancelP()}
+if(tap||/\b(confirm|yes|proceed|go ahead|do it)\b/.test(l)){
+if(S.pinHash){const d=tap==="ui"?$("pin").value.replace(/\D/g,""):t.replace(/\D/g,"")||$("pin").value.replace(/\D/g,"");if(!d||await sha(d)!==S.pinHash){busy=false;return say("That PIN does not match.")}}
+const p=pending;pending=null;$("pend").style.display="none";await run(p.a,p.r);busy=false;ui(listening);if(listening&&!speaking)startRec();return}
+busy=false}
+async function cancelP(){pending=null;$("pend").style.display="none";await say("Cancelled.");busy=false;ui(listening);if(listening&&!speaking)startRec()}
+$("ok").onclick=()=>resolve("confirm","ui");$("no").onclick=cancelP;
+async function run(a,r){const p=a.params||{},go=u=>{location.href=u};let ok=true,msg=r.speak;
+try{switch(a.name){
+case"call":go("tel:"+encodeURIComponent(p.to));break;
+case"sms":go(`sms:${encodeURIComponent(p.to)}?body=${encodeURIComponent(p.body||"")}`);msg="Message drafted. Press send in your messages app.";break;
+case"email":go(`mailto:${p.to}?subject=${encodeURIComponent(p.subject||"")}&body=${encodeURIComponent(p.body||"")}`);msg="Email drafted. Press send in your mail app.";break;
+case"navigate":go("https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(p.to));break;
+case"open_url":window.open(p.url,"_blank");break;
+case"web_search":window.open("https://www.google.com/search?q="+encodeURIComponent(p.q),"_blank");break;
+case"youtube":window.open("https://www.youtube.com/results?search_query="+encodeURIComponent(p.q),"_blank");break;
+case"timer":{const s=Math.max(1,+p.seconds||60);if("Notification" in window&&Notification.permission==="default")Notification.requestPermission();timers.push(setTimeout(()=>{say((p.label?p.label+": ":"")+"your timer is done.");try{new Notification("James",{body:p.label||"Timer done"})}catch{}},s*1e3));break}
+case"alarm":go(`intent:#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR=${+p.hour};i.android.intent.extra.alarm.MINUTES=${+p.minute};S.android.intent.extra.alarm.MESSAGE=${encodeURIComponent(p.label||"James")};B.android.intent.extra.alarm.SKIP_UI=true;end`);msg=r.speak+" If nothing happened, the clock app may need to open.";break;
+case"note_add":D.notes.push(p.text);W("j_data",D);break;
+case"todo_add":D.todos.push(p.text);W("j_data",D);break;
+case"shop_add":D.shop.push(p.text);W("j_data",D);break;
+case"list_show":{const l=D[p.list]||[];msg=l.length?"You have "+l.join(", ")+".":"That list is empty.";break}
+case"http":{let base=p.device||"";const m=S.devices.split("\n").map(x=>x.split("=")).find(x=>x[0]&&x[0].trim().toLowerCase()==base.toLowerCase());const url=(m?m.slice(1).join("=").trim():base).replace(/\/$/,"")+(p.path||"");if(location.protocol==="https:"&&url.startsWith("http:"))throw new Error("blocked");const res=await fetch(url,{method:p.method||"GET",body:p.body?(typeof p.body==="string"?p.body:JSON.stringify(p.body)):undefined,mode:"cors"});ok=res.ok;if(!ok)msg="The device answered with error "+res.status+".";break}
+case"share":if(navigator.share)await navigator.share({text:p.text});else throw new Error("noshare");break;
+case"copy":await navigator.clipboard.writeText(p.text);break;
+default:ok=false;msg="I cannot do that from a web app yet."}}
+catch(e){ok=false;msg=e.message==="blocked"?"The browser blocks plain http devices from an https page. Serve the device over https, or see the readme for the workaround.":"That did not work: "+(e.message||"unknown error")}
+return say(msg||"Done.",ok?r.lang:undefined)}
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js");
+speechSynthesis.onvoiceschanged=()=>{};add("Good day, sir. Which three features shall we enable first?","s");
+</script></body></html>
